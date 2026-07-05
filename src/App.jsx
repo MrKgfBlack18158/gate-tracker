@@ -1738,6 +1738,212 @@ function WeekChart({ sessions }) {
   );
 }
 
+// ---- GitHub-style contribution grid ----
+// 52 weeks × 7 days. Intensity based on total study minutes that day.
+function ContributionGrid({ sessions }) {
+  const CELL = 13;
+  const GAP = 3;
+  const WEEKS = 52;
+  const DAYS = 7;
+  const MONTH_LABEL_H = 18;
+  const DAY_LABEL_W = 28;
+
+  // Build a date→minutes map
+  const minutesByDate = useMemo(() => {
+    const map = {};
+    sessions.forEach(s => {
+      map[s.date] = (map[s.date] || 0) + s.minutes;
+    });
+    return map;
+  }, [sessions]);
+
+  // Find today and align to Sunday-start grid like GitHub
+  const today = new Date();
+  today.setHours(0, 0, 0, 0);
+  // End of grid = end of current week (Saturday)
+  const endDate = new Date(today);
+  const dayOfWeek = today.getDay(); // 0=Sun
+  endDate.setDate(today.getDate() + (6 - dayOfWeek));
+  // Start = 52 weeks back from end
+  const startDate = new Date(endDate);
+  startDate.setDate(endDate.getDate() - WEEKS * 7 + 1);
+
+  // Build grid: array of weeks, each week = 7 days
+  const grid = [];
+  const monthLabels = [];
+  let d = new Date(startDate);
+  for (let w = 0; w < WEEKS; w++) {
+    const week = [];
+    for (let day = 0; day < DAYS; day++) {
+      const iso = d.toISOString().slice(0, 10);
+      const mins = minutesByDate[iso] || 0;
+      const isFuture = d > today;
+      week.push({ iso, mins, isFuture, isToday: iso === today.toISOString().slice(0, 10) });
+      // Month label: first day of month that falls on a week boundary
+      if (day === 0 && d.getDate() <= 7) {
+        monthLabels.push({
+          week: w,
+          label: d.toLocaleDateString("en", { month: "short" }),
+        });
+      }
+      d.setDate(d.getDate() + 1);
+    }
+    grid.push(week);
+  }
+
+  // Max minutes for intensity scaling
+  const allMins = Object.values(minutesByDate);
+  const maxMins = allMins.length ? Math.max(...allMins) : 1;
+
+  // Colour: same teal scale as GitHub but using your accent teal
+  const cellColor = (mins, isFuture) => {
+    if (isFuture) return "transparent";
+    if (mins === 0) return "var(--track)";
+    const intensity = Math.min(1, mins / Math.max(maxMins, 60));
+    // 4 levels like GitHub
+    if (intensity < 0.25) return "#1D4E3E";
+    if (intensity < 0.5)  return "#1A7A5C";
+    if (intensity < 0.75) return "#1D9E75";
+    return "#26D49A";
+  };
+
+  const SVG_W = DAY_LABEL_W + WEEKS * (CELL + GAP);
+  const SVG_H = MONTH_LABEL_H + DAYS * (CELL + GAP);
+  const DAY_NAMES = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
+
+  // Longest streak
+  const longestStreak = useMemo(() => {
+    const dates = Object.keys(minutesByDate)
+      .filter(d => minutesByDate[d] > 0)
+      .sort();
+    let max_ = 0, cur = 0, prev = null;
+    dates.forEach(iso => {
+      if (prev) {
+        const diff = (new Date(iso) - new Date(prev)) / 86400000;
+        cur = diff === 1 ? cur + 1 : 1;
+      } else cur = 1;
+      if (cur > max_) max_ = cur;
+      prev = iso;
+    });
+    return max_;
+  }, [minutesByDate]);
+
+  // Current streak
+  const currentStreak = useMemo(() => {
+    let count = 0;
+    const d_ = new Date(today);
+    while (true) {
+      const iso = d_.toISOString().slice(0, 10);
+      if (!minutesByDate[iso]) break;
+      count++;
+      d_.setDate(d_.getDate() - 1);
+    }
+    return count;
+  }, [minutesByDate]);
+
+  const totalDaysStudied = Object.keys(minutesByDate).filter(d => minutesByDate[d] > 0).length;
+  const totalMinsAll = Object.values(minutesByDate).reduce((a, b) => a + b, 0);
+
+  return (
+    <div style={fStyles.gridWrap}>
+      {/* Summary stats */}
+      <div style={fStyles.gridStats}>
+        <div style={fStyles.gridStat}>
+          <span style={fStyles.gridStatNum}>{currentStreak}</span>
+          <span style={fStyles.gridStatLabel}>current streak</span>
+        </div>
+        <div style={fStyles.gridStat}>
+          <span style={fStyles.gridStatNum}>{longestStreak}</span>
+          <span style={fStyles.gridStatLabel}>longest streak</span>
+        </div>
+        <div style={fStyles.gridStat}>
+          <span style={fStyles.gridStatNum}>{totalDaysStudied}</span>
+          <span style={fStyles.gridStatLabel}>days studied</span>
+        </div>
+        <div style={fStyles.gridStat}>
+          <span style={fStyles.gridStatNum}>{Math.round(totalMinsAll / 60)}h</span>
+          <span style={fStyles.gridStatLabel}>total hours</span>
+        </div>
+      </div>
+
+      {/* The grid */}
+      <div style={{ overflowX: "auto", paddingBottom: 4 }}>
+        <svg
+          width={SVG_W}
+          height={SVG_H}
+          viewBox={`0 0 ${SVG_W} ${SVG_H}`}
+          style={{ display: "block" }}
+        >
+          {/* Month labels */}
+          {monthLabels.map(({ week, label }) => (
+            <text
+              key={`${week}-${label}`}
+              x={DAY_LABEL_W + week * (CELL + GAP)}
+              y={MONTH_LABEL_H - 4}
+              fill="var(--dim)"
+              fontSize={9}
+              fontFamily="ui-monospace,monospace"
+            >
+              {label}
+            </text>
+          ))}
+
+          {/* Day-of-week labels (Mon, Wed, Fri only like GitHub) */}
+          {[1, 3, 5].map(d_ => (
+            <text
+              key={d_}
+              x={DAY_LABEL_W - 4}
+              y={MONTH_LABEL_H + d_ * (CELL + GAP) + CELL - 2}
+              textAnchor="end"
+              fill="var(--dim)"
+              fontSize={9}
+              fontFamily="ui-monospace,monospace"
+            >
+              {DAY_NAMES[d_].slice(0, 3)}
+            </text>
+          ))}
+
+          {/* Cells */}
+          {grid.map((week, wi) =>
+            week.map((cell, di) => {
+              const x = DAY_LABEL_W + wi * (CELL + GAP);
+              const y = MONTH_LABEL_H + di * (CELL + GAP);
+              return (
+                <rect
+                  key={cell.iso}
+                  x={x}
+                  y={y}
+                  width={CELL}
+                  height={CELL}
+                  rx={2}
+                  fill={cellColor(cell.mins, cell.isFuture)}
+                  stroke={cell.isToday ? "#BA7517" : "none"}
+                  strokeWidth={cell.isToday ? 1.5 : 0}
+                >
+                  <title>
+                    {cell.iso}:{cell.mins > 0
+                      ? ` ${cell.mins} min studied`
+                      : cell.isFuture ? " (future)" : " no sessions"}
+                  </title>
+                </rect>
+              );
+            })
+          )}
+        </svg>
+      </div>
+
+      {/* Legend */}
+      <div style={fStyles.gridLegend}>
+        <span style={fStyles.gridLegendLabel}>Less</span>
+        {["var(--track)", "#1D4E3E", "#1A7A5C", "#1D9E75", "#26D49A"].map((c, i) => (
+          <span key={i} style={{ ...fStyles.gridLegendCell, background: c }} />
+        ))}
+        <span style={fStyles.gridLegendLabel}>More</span>
+      </div>
+    </div>
+  );
+}
+
 // ---- Countdown timer ring ----
 function TimerRing({ totalSecs, remainingSecs, running, paused }) {
   const SIZE = 200, cx = 100, cy = 100, R = 82, stroke = 10;
@@ -1890,17 +2096,6 @@ function FocusTab({ sessions, loaded, onLog, onDelete }) {
   const todaySessions = sessions.filter(s => s.date === today);
   const todayMins = todaySessions.reduce((a, s) => a + s.minutes, 0);
 
-  const streak = useMemo(() => {
-    const days = new Set(sessions.map(s => s.date));
-    let count = 0, d = new Date();
-    while (true) {
-      const iso = d.toISOString().slice(0, 10);
-      if (!days.has(iso)) break;
-      count++; d.setDate(d.getDate() - 1);
-    }
-    return count;
-  }, [sessions]);
-
   const avgMins = useMemo(() => {
     const recent = sessions.slice(0, 7);
     if (!recent.length) return 0;
@@ -1921,12 +2116,11 @@ function FocusTab({ sessions, loaded, onLog, onDelete }) {
 
   return (
     <div>
+      {/* Contribution grid — replaces simple streak + week chart */}
+      <ContributionGrid sessions={sessions} />
+
       {/* Stats */}
       <div style={fStyles.statsRow}>
-        <div style={fStyles.statBox}>
-          <div style={fStyles.statNum}>{streak}</div>
-          <div style={fStyles.statLabel}>day streak</div>
-        </div>
         <div style={fStyles.statBox}>
           <div style={fStyles.statNum}>{todaySessions.length}</div>
           <div style={fStyles.statLabel}>today</div>
@@ -1949,6 +2143,12 @@ function FocusTab({ sessions, loaded, onLog, onDelete }) {
             <div style={fStyles.statLabel}>all sessions</div>
           </div>
         )}
+        <div style={fStyles.statBox}>
+          <div style={{ ...fStyles.statNum, color: stage.color }}>
+            {Math.round(avgMins)}m
+          </div>
+          <div style={fStyles.statLabel}>avg session</div>
+        </div>
       </div>
 
       {/* Stage */}
@@ -2055,12 +2255,6 @@ function FocusTab({ sessions, loaded, onLog, onDelete }) {
         </div>
       )}
 
-      {/* 7-day chart */}
-      <div style={fStyles.chartWrap}>
-        <div style={fStyles.chartTitle}>Last 7 days (minutes)</div>
-        <WeekChart sessions={sessions} />
-      </div>
-
       {/* Tree rings */}
       <div style={fStyles.ringsWrap}>
         <div style={fStyles.chartTitle}>Session rings (newest → centre)</div>
@@ -2117,7 +2311,6 @@ function FocusTab({ sessions, loaded, onLog, onDelete }) {
 }
 
 const fStyles = {
-  intro: { fontSize: 14, color: "var(--ink-soft)", marginBottom: 16, lineHeight: 1.5 },
   statsRow: {
     display: "grid", gridTemplateColumns: "repeat(4, 1fr)",
     gap: 10, marginBottom: 16,
@@ -2154,7 +2347,6 @@ const fStyles = {
     color: "var(--dim)", textAlign: "center", margin: 0,
   },
   quickRow: { display: "flex", flexWrap: "wrap", gap: 6 },
-  chartWrap: { marginBottom: 20 },
   chartTitle: {
     fontFamily: "ui-monospace,monospace", fontSize: 11,
     color: "var(--dim)", marginBottom: 8,
@@ -2194,6 +2386,54 @@ const fStyles = {
   sessionLabel: { fontSize: 13, color: "var(--ink-soft)", flex: 1 },
   sessionDate: { fontFamily: "ui-monospace,monospace", fontSize: 11, color: "var(--dim)" },
   empty: { color: "var(--dim)", fontSize: 14, padding: "20px 0" },
+  gridWrap: { marginBottom: 20 },
+  gridStats: {
+    display: "grid",
+    gridTemplateColumns: "repeat(4, 1fr)",
+    gap: 8,
+    marginBottom: 12,
+  },
+  gridStat: {
+    background: "var(--card)",
+    border: "1px solid var(--line)",
+    borderRadius: 8,
+    padding: "8px 10px",
+    display: "flex",
+    flexDirection: "column",
+    alignItems: "center",
+    gap: 3,
+  },
+  gridStatNum: {
+    fontSize: 20,
+    fontWeight: 700,
+    color: "var(--ink)",
+    lineHeight: 1,
+  },
+  gridStatLabel: {
+    fontSize: 9,
+    color: "var(--dim)",
+    fontFamily: "ui-monospace,monospace",
+    textTransform: "uppercase",
+    letterSpacing: "0.05em",
+  },
+  gridLegend: {
+    display: "flex",
+    alignItems: "center",
+    gap: 4,
+    marginTop: 6,
+    justifyContent: "flex-end",
+  },
+  gridLegendLabel: {
+    fontSize: 9,
+    color: "var(--dim)",
+    fontFamily: "ui-monospace,monospace",
+  },
+  gridLegendCell: {
+    width: 11,
+    height: 11,
+    borderRadius: 2,
+    display: "inline-block",
+  },
 };
 
 
